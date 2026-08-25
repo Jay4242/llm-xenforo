@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "forum-comment-classifier"
+version = "0.1.0"
+description = "Extract forum comments and classify them through a local OpenAI-compatible LLM"
+requires-python = ">=3.10"
+dependencies = [
+    "beautifulsoup4>=4.12",
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+browser = ["playwright>=1.45"]
+test = ["pytest>=8.0"]
+
+[project.scripts]
+forum-classify = "forum_classifier.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
