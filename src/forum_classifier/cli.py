@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .classifier import DEFAULT_LLM_TIMEOUT, LocalClassifier
 from .scraper import ForumAccessError, ForumScraper
-from .storage import save_comment
+from .storage import load_comment_ids, load_state, save_comment, save_state
 
 DEFAULT_CHROME_PATH = "/usr/bin/google-chrome"
 DEFAULT_BROWSER_PROFILE = os.path.expanduser("~/.cache/forum-classifier/chrome-profile")
@@ -21,6 +21,7 @@ def main() -> None:
     parser.add_argument("--model", default="local-model")
     parser.add_argument("--llm-timeout", type=float, default=DEFAULT_LLM_TIMEOUT, help="LLM request timeout in seconds (default: 600)")
     parser.add_argument("--max-pages", type=int)
+    parser.add_argument("--resume", action="store_true", help="resume after the last completed page in the output state file")
     parser.add_argument("--delay", type=float, default=1.0, help="seconds between page requests")
     images_group = parser.add_mutually_exclusive_group()
     images_group.add_argument("--images", dest="images", action="store_true", help="download comment images in memory and send them to the LLM (default)")
@@ -40,6 +41,13 @@ def main() -> None:
     args = parser.parse_args()
     if args.user_data_dir is None:
         args.user_data_dir = DEFAULT_BROWSER_PROFILE
+    state = load_state(args.output_dir) if args.resume else None
+    if state and state["thread_url"].rstrip("/") != args.url.rstrip("/"):
+        parser.error("--resume URL does not match the thread_url in the output state file")
+    start_page = int(state["page"]) + 1 if state else 1
+    existing_ids = load_comment_ids(args.output_dir) if args.resume else set()
+    if args.resume:
+        logging.info("Resuming at page %d with %d existing comment IDs", start_page, len(existing_ids))
 
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING, format="%(asctime)s %(levelname)s %(message)s")
     logging.info("Starting classification for %s", args.url)
@@ -56,15 +64,18 @@ def main() -> None:
     seen: set[str] = set()
     total = 0
     try:
-        for comment in scraper.comments(args.url, max_pages=args.max_pages):
-            if comment.comment_id in seen:
-                logging.info("Skipping duplicate comment %s", comment.comment_id)
-                continue
-            seen.add(comment.comment_id)
-            classification = classifier.classify(comment)
-            path = save_comment(args.output_dir, comment, classification)
-            total += 1
-            print(f"{comment.comment_id}: {classification.category} -> {path}")
+        for page_number, page_url, comments in scraper.comment_pages(args.url, max_pages=args.max_pages, start_page=start_page):
+            for comment in comments:
+                if comment.comment_id in seen or comment.comment_id in existing_ids:
+                    logging.info("Skipping duplicate comment %s", comment.comment_id)
+                    continue
+                seen.add(comment.comment_id)
+                classification = classifier.classify(comment)
+                path = save_comment(args.output_dir, comment, classification)
+                total += 1
+                print(f"{comment.comment_id}: {classification.category} -> {path}")
+            save_state(args.output_dir, args.url, page_number)
+            logging.info("Checkpointed completed page %d (%s)", page_number, page_url)
     except ForumAccessError as error:
         parser.error(str(error))
     print(f"Processed {total} comments")
