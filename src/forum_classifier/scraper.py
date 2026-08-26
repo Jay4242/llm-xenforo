@@ -51,18 +51,19 @@ class ForumScraper:
         self.delay = max(0.0, delay)
         self.timeout = timeout
 
-    def pages(self, start_url: str, *, max_pages: int | None = None) -> Iterator[tuple[str, str]]:
+    def pages(self, start_url: str, *, max_pages: int | None = None, start_page: int = 1) -> Iterator[tuple[str, str]]:
         if self.browser:
-            yield from self._browser_pages(start_url, max_pages=max_pages)
+            yield from self._browser_pages(start_url, max_pages=max_pages, start_page=start_page)
             return
-        current = self._canonical_url(start_url)
+        current = self.page_url(start_url, start_page)
         seen: set[str] = set()
-        count = 0
-        while current and current not in seen and (max_pages is None or count < max_pages):
-            logger.info("Fetching forum page %d: %s", count + 1, current)
+        fetched = 0
+        page_number = start_page
+        while current and current not in seen and (max_pages is None or fetched < max_pages):
+            logger.info("Fetching forum page %d: %s", page_number, current)
             response = self.session.get(current, timeout=self.timeout)
             response.raise_for_status()
-            logger.info("Received forum page %d (%d bytes)", count + 1, len(response.text))
+            logger.info("Received forum page %d (%d bytes)", page_number, len(response.text))
             if self.is_browser_challenge(response.text):
                 raise ForumAccessError(
                     "The forum returned a browser-validation page instead of thread content. "
@@ -72,23 +73,25 @@ class ForumScraper:
                 )
             yield current, response.text
             seen.add(current)
-            count += 1
+            fetched += 1
+            page_number += 1
             next_url = self.next_page_url(response.text, current)
             if next_url and next_url not in seen:
                 logger.info("Next forum page: %s", next_url)
                 time.sleep(self.delay)
             current = next_url
 
-    def _browser_pages(self, start_url: str, *, max_pages: int | None = None) -> Iterator[tuple[str, str]]:
+    def _browser_pages(self, start_url: str, *, max_pages: int | None = None, start_page: int = 1) -> Iterator[tuple[str, str]]:
         try:
             from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
             from playwright.sync_api import sync_playwright
         except ImportError as error:
             raise ForumAccessError("Browser mode requires Playwright. Install with: pip install -e '.[browser]'") from error
 
-        current = self._canonical_url(start_url)
+        current = self.page_url(start_url, start_page)
         seen: set[str] = set()
-        count = 0
+        fetched = 0
+        page_number = start_page
         with sync_playwright() as playwright:
             launch_options = {
                 "headless": not self.headed,
@@ -106,8 +109,8 @@ class ForumScraper:
             page = context.new_page()
             page.set_default_timeout(self.timeout * 1000)
             try:
-                while current and current not in seen and (max_pages is None or count < max_pages):
-                    logger.info("Opening forum page %d in browser: %s", count + 1, current)
+                while current and current not in seen and (max_pages is None or fetched < max_pages):
+                    logger.info("Opening forum page %d in browser: %s", page_number, current)
                     page.goto(current, wait_until="domcontentloaded", timeout=self.timeout * 1000)
                     try:
                         page.wait_for_selector("article.message, li.message", timeout=self.timeout * 1000)
@@ -120,10 +123,11 @@ class ForumScraper:
                             )
                         raise
                     html = page.content()
-                    logger.info("Browser loaded forum page %d (%d bytes)", count + 1, len(html))
+                    logger.info("Browser loaded forum page %d (%d bytes)", page_number, len(html))
                     yield current, html
                     seen.add(current)
-                    count += 1
+                    fetched += 1
+                    page_number += 1
                     next_url = self.next_page_url(html, current)
                     if next_url and next_url not in seen:
                         logger.info("Next forum page: %s", next_url)
@@ -134,13 +138,21 @@ class ForumScraper:
                 if browser:
                     browser.close()
 
-    def comments(self, start_url: str, *, max_pages: int | None = None) -> Iterator[Comment]:
-        for page_url, html in self.pages(start_url, max_pages=max_pages):
+    def comments(self, start_url: str, *, max_pages: int | None = None, start_page: int = 1) -> Iterator[Comment]:
+        for page_url, html in self.pages(start_url, max_pages=max_pages, start_page=start_page):
             comments = self.parse_comments(html, page_url)
             if self.include_images:
                 comments = [self._with_images(comment) for comment in comments]
             logger.info("Extracted %d comments from %s", len(comments), page_url)
             yield from comments
+
+    def comment_pages(self, start_url: str, *, max_pages: int | None = None, start_page: int = 1) -> Iterator[tuple[int, str, list[Comment]]]:
+        for page_number, (page_url, html) in enumerate(self.pages(start_url, max_pages=max_pages, start_page=start_page), start=start_page):
+            comments = self.parse_comments(html, page_url)
+            if self.include_images:
+                comments = [self._with_images(comment) for comment in comments]
+            logger.info("Extracted %d comments from page %d", len(comments), page_number)
+            yield page_number, page_url, comments
 
     @staticmethod
     def parse_comments(html: str, page_url: str) -> list[Comment]:
@@ -203,6 +215,19 @@ class ForumScraper:
     def is_browser_challenge(html: str) -> bool:
         lowered = html.lower()
         return "validating browser" in lowered or "zeebotguard" in lowered
+
+    @classmethod
+    def page_url(cls, thread_url: str, page_number: int) -> str:
+        if page_number < 1:
+            raise ValueError("page number must be at least 1")
+        canonical = cls._canonical_url(thread_url)
+        if page_number == 1:
+            return canonical
+        parsed = urlparse(canonical)
+        path = parsed.path.rstrip("/")
+        if path.endswith(f"/page-{page_number}"):
+            return canonical
+        return urlunparse(parsed._replace(path=f"{path}/page-{page_number}"))
 
     @staticmethod
     def _canonical_url(value: str) -> str:

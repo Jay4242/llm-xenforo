@@ -14,17 +14,17 @@ The `browser` extra installs Playwright; it uses the system Chrome executable wh
 
 ## Run
 
-Start the backend at `http://127.0.0.1:8080/v1`, then run:
+Start the backend at `http://127.0.0.1:8080/v1`, then run it against a XenForo thread:
 
 ```bash
-forum-classify 'https://www.diyaudio.com/community/threads/finally-an-affordable-cd-transport-the-shigaclone-story.120229/'
+forum-classify 'https://forum.example.com/community/threads/example-thread.123/'
 ```
 
-This forum currently presents a JavaScript bot guard to HTTP clients. Browser mode, installed Chrome, headed mode, and a persistent profile are the defaults for this project, so the short command is sufficient:
+For forums that present a JavaScript bot guard to HTTP clients, browser mode, installed Chrome, headed mode, and a persistent profile are the defaults for this project, so the short command is sufficient:
 
 ```bash
 forum-classify \
-  'https://www.diyaudio.com/community/threads/finally-an-affordable-cd-transport-the-shigaclone-story.120229/'
+  'https://forum.example.com/community/threads/example-thread.123/'
 ```
 
 The default profile is `~/.cache/forum-classifier/chrome-profile`. Browser mode waits for the message elements to appear before handing the rendered HTML to the same parser used by the requests mode. Use `--headless` for unattended operation, or `--no-browser` to force the plain `requests` path.
@@ -37,6 +37,7 @@ Useful options:
 --model NAME                       model name expected by the backend
 --llm-timeout SECONDS              LLM request timeout (default: 600)
 --max-pages N                      limit pagination while testing
+--resume                           continue after the last completed page
 --delay SECONDS                    delay between forum page requests (default: 1)
 --images                           send comment images to the multimodal LLM (default)
 --no-images                        do not download or send comment images
@@ -52,6 +53,8 @@ Useful options:
 The classifier calls `POST /chat/completions` and expects a JSON response in the normal `choices[0].message.content` shape. It requests JSON containing `category`, `summary`, `subjects`, and `confidence`.
 
 Images attached inside comments are downloaded into memory and sent as base64 image inputs by default. Images are never written to disk. Use `--no-images` to disable this behavior. The local model must support OpenAI-compatible multimodal chat content when images are enabled.
+
+Progress is checkpointed in `classified-comments/.state.json` after each fully processed page. To resume without fetching earlier pages, run the same thread URL with `--resume`. Existing category files are scanned locally for `Comment ID` values so comments from an interrupted page are not duplicated.
 
 ## Development
 
